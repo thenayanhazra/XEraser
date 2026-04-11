@@ -36,6 +36,10 @@ Rate limits are handled automatically. When X throttles requests, XEraser reads 
 
 For tweet deletion, XEraser auto-calculates how many already-deleted tweets to skip (based on the difference between your export file and your current profile count). You can override this with the skip input field. The **Keep latest** field lets you protect your N most recent tweets from deletion (up to 100).
 
+**Date-range deletion** — set a From and/or To date to only delete tweets (or likes) within that window. When a file is loaded, XEraser shows the date range it contains. Dates are extracted from the tweet's `created_at` field or derived from the snowflake ID when timestamps aren't available.
+
+**Resume after interruption** — if you stop mid-session or close the tab, XEraser saves progress to localStorage. Next time you open x.com, a banner offers to pick up where you left off — no need to re-upload the file.
+
 ## License
 
 MIT

@@ -98,19 +98,43 @@
 
   // ─── File Parser (pure — no side effects) ──────────────────────────
 
+  // Twitter snowflake ID → Date (accurate to ~1 second)
+  function dateFromSnowflake(id) {
+    // id / 2^22 gives ms offset from Twitter epoch
+    return new Date(Math.floor(Number(id) / 4194304) + 1288834974657);
+  }
+
   function parseExportFile(text) {
     const eqIdx = text.indexOf('= ');
     const header = text.slice(0, eqIdx);
     const json = JSON.parse(text.slice(eqIdx + 1));
 
     if (header.includes('.tweet_headers.')) {
-      return { action: 'tweets', ids: json.map((x) => x.tweet.tweet_id) };
+      return {
+        action: 'tweets',
+        entries: json.map((x) => ({
+          id: x.tweet.tweet_id,
+          date: dateFromSnowflake(x.tweet.tweet_id),
+        })),
+      };
     }
     if (header.includes('.tweets.') || header.includes('.tweet.')) {
-      return { action: 'tweets', ids: json.map((x) => x.tweet.id_str) };
+      return {
+        action: 'tweets',
+        entries: json.map((x) => ({
+          id: x.tweet.id_str,
+          date: x.tweet.created_at ? new Date(x.tweet.created_at) : dateFromSnowflake(x.tweet.id_str),
+        })),
+      };
     }
     if (header.includes('.like.')) {
-      return { action: 'likes', ids: json.map((x) => x.like.tweetId) };
+      return {
+        action: 'likes',
+        entries: json.map((x) => ({
+          id: x.like.tweetId,
+          date: dateFromSnowflake(x.like.tweetId),
+        })),
+      };
     }
     if (
       header.includes('.direct_message_headers.') ||
@@ -118,8 +142,10 @@
       header.includes('.direct_messages.') ||
       header.includes('.direct_message_groups.')
     ) {
-      const convoIds = json.map((c) => c.dmConversation.conversationId);
-      return { action: 'conversations', ids: convoIds };
+      return {
+        action: 'conversations',
+        entries: json.map((c) => ({ id: c.dmConversation.conversationId, date: null })),
+      };
     }
 
     throw new Error('Unrecognized file. Use a file from your X/Twitter data export.');
@@ -130,6 +156,38 @@
     // Auto-skip: difference minus 5% tolerance
     const auto = totalInFile - profileCount - Math.floor(totalInFile / 20);
     return Math.max(0, auto);
+  }
+
+  function filterEntriesByDate(entries, from, to) {
+    return entries.filter((e) => {
+      if (!e.date) return true;
+      if (from && e.date < from) return false;
+      if (to && e.date > to) return false;
+      return true;
+    });
+  }
+
+  function formatDate(d) {
+    return d.toISOString().slice(0, 10);
+  }
+
+  // ─── Progress Persistence ──────────────────────────────────────────
+
+  const STORAGE_KEY = 'xeraser_session';
+
+  function saveSession(data) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
+  }
+
+  function loadSession() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function clearSession() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
   }
 
   // ─── API Layer ──────────────────────────────────────────────────────
@@ -230,7 +288,7 @@
 
   // ─── Deletion Workers ──────────────────────────────────────────────
 
-  async function deleteTweets(api, ids, onProgress, signal) {
+  async function deleteTweets(api, ids, onProgress, signal, onSave) {
     for (let i = ids.length - 1; i >= 0; i--) {
       if (signal.aborted) return;
       const id = ids[i];
@@ -242,11 +300,14 @@
       const result = await api.post(ENDPOINTS.deleteTweet, body, {
         onWaiting: (s) => onProgress({ waiting: s, id }),
       });
-      if (result.ok) onProgress({ deleted: id, remaining: i });
+      if (result.ok) {
+        onProgress({ deleted: id, remaining: i });
+        if (onSave) onSave(ids.slice(0, i));
+      }
     }
   }
 
-  async function deleteLikes(api, ids, onProgress, signal) {
+  async function deleteLikes(api, ids, onProgress, signal, onSave) {
     for (let i = ids.length - 1; i >= 0; i--) {
       if (signal.aborted) return;
       const id = ids[i];
@@ -258,11 +319,14 @@
       const result = await api.post(ENDPOINTS.unfavorite, body, {
         onWaiting: (s) => onProgress({ waiting: s, id }),
       });
-      if (result.ok) onProgress({ deleted: id, remaining: i });
+      if (result.ok) {
+        onProgress({ deleted: id, remaining: i });
+        if (onSave) onSave(ids.slice(0, i));
+      }
     }
   }
 
-  async function deleteConversations(api, ids, onProgress, signal) {
+  async function deleteConversations(api, ids, onProgress, signal, onSave) {
     for (let i = ids.length - 1; i >= 0; i--) {
       if (signal.aborted) return;
       const id = ids[i];
@@ -275,6 +339,7 @@
       });
       if (result.ok) {
         onProgress({ deleted: id, remaining: i });
+        if (onSave) onSave(ids.slice(0, i));
         await sleep(Math.floor(Math.random() * 200));
       }
     }
@@ -585,6 +650,64 @@
       }
       .xer-skip-input::placeholder { color: #3f3f46; }
 
+      .xer-date-input {
+        background: #18181b;
+        border: 1px solid #27272a;
+        border-radius: 6px;
+        padding: 8px 10px;
+        color: #e4e4e7;
+        font-family: 'DM Mono', monospace;
+        font-size: 12px;
+        color-scheme: dark;
+      }
+      .xer-date-label {
+        font-size: 11px;
+        color: #52525b;
+        margin-right: 4px;
+      }
+      .xer-date-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .xer-resume {
+        background: #1a1a0a;
+        border: 1px solid #854d0e;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .xer-resume-text {
+        font-size: 13px;
+        color: #fbbf24;
+      }
+      .xer-resume-btn {
+        background: #854d0e;
+        border: none;
+        border-radius: 6px;
+        padding: 6px 14px;
+        color: #fef3c7;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .xer-resume-btn:hover { background: #a16207; }
+      .xer-resume-dismiss {
+        background: none;
+        border: none;
+        color: #71717a;
+        font-size: 16px;
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+
       /* Progress */
       .xer-progress-wrap { margin-top: 12px; }
       .xer-progress-bar {
@@ -625,6 +748,14 @@
         <button class="xer-close" id="xer-close">&times;</button>
       </div>
 
+      <div class="xer-resume" id="xer-resume" style="display:none;">
+        <span class="xer-resume-text" id="xer-resume-text"></span>
+        <div>
+          <button class="xer-resume-btn" id="xer-resume-btn">Resume</button>
+          <button class="xer-resume-dismiss" id="xer-resume-dismiss">&times;</button>
+        </div>
+      </div>
+
       <div class="xer-actions" id="xer-actions">
         <button class="xer-action-btn" data-action="tweets">
           <span class="xer-action-label">Tweets</span>
@@ -659,6 +790,12 @@
         </label>
         <input class="xer-skip-input" id="xer-skip" type="number" placeholder="Skip #" title="Tweets to skip (oldest first)" style="display:none;" />
         <input class="xer-skip-input" id="xer-keep" type="number" min="0" max="100" placeholder="Keep latest" title="Keep your N most recent tweets (max 100)" style="display:none;" />
+        <div class="xer-date-group" id="xer-dates" style="display:none;">
+          <span class="xer-date-label">From</span>
+          <input class="xer-date-input" id="xer-date-from" type="date" />
+          <span class="xer-date-label">To</span>
+          <input class="xer-date-input" id="xer-date-to" type="date" />
+        </div>
         <button class="xer-go" id="xer-go" disabled>Start</button>
         <button class="xer-stop" id="xer-stop" style="display:none;">Stop</button>
       </div>
@@ -694,17 +831,34 @@
     const fileInput = panel.querySelector('#xer-file');
     const skipInput = panel.querySelector('#xer-skip');
     const keepInput = panel.querySelector('#xer-keep');
+    const datesGroup = panel.querySelector('#xer-dates');
+    const dateFrom = panel.querySelector('#xer-date-from');
+    const dateTo = panel.querySelector('#xer-date-to');
     const goBtn = panel.querySelector('#xer-go');
     const stopBtn = panel.querySelector('#xer-stop');
     const progressWrap = panel.querySelector('#xer-progress');
     const fill = panel.querySelector('#xer-fill');
     const status = panel.querySelector('#xer-status');
     const closeBtn = panel.querySelector('#xer-close');
+    const resumeBanner = panel.querySelector('#xer-resume');
+    const resumeText = panel.querySelector('#xer-resume-text');
+    const resumeBtn = panel.querySelector('#xer-resume-btn');
+    const resumeDismiss = panel.querySelector('#xer-resume-dismiss');
 
     const NEEDS_FILE = new Set(['tweets', 'likes', 'conversations']);
+    const HAS_DATES = new Set(['tweets', 'likes']);
 
     function setStatus(text) { status.textContent = text; }
     function setProgress(ratio) { fill.style.width = `${Math.min(100, ratio * 100)}%`; }
+
+    function updateVisibility() {
+      const needsFile = NEEDS_FILE.has(selectedAction);
+      fileLabel.style.display = needsFile ? '' : 'none';
+      const isTweets = selectedAction === 'tweets';
+      skipInput.style.display = isTweets ? '' : 'none';
+      keepInput.style.display = isTweets ? '' : 'none';
+      datesGroup.style.display = HAS_DATES.has(selectedAction) ? '' : 'none';
+    }
 
     function updateReadiness() {
       if (!selectedAction) { goBtn.disabled = true; return; }
@@ -712,7 +866,74 @@
       goBtn.disabled = false;
     }
 
-    // Action selection
+    // ── Resume from previous session ──────────────────────────────────
+
+    const saved = loadSession();
+    if (saved && saved.remainingIds && saved.remainingIds.length > 0) {
+      resumeText.textContent = `Previous ${saved.action} session: ${saved.deleted} done, ${saved.remainingIds.length} remaining`;
+      resumeBanner.style.display = '';
+    }
+
+    resumeDismiss.addEventListener('click', () => {
+      clearSession();
+      resumeBanner.style.display = 'none';
+    });
+
+    resumeBtn.addEventListener('click', async () => {
+      resumeBanner.style.display = 'none';
+      const s = loadSession();
+      if (!s) return;
+
+      goBtn.disabled = true;
+      stopBtn.style.display = '';
+      progressWrap.style.display = '';
+      abortController = new AbortController();
+
+      let deleted = s.deleted;
+      const total = s.total;
+      const ids = s.remainingIds;
+
+      function onProgress(info) {
+        if (info.deleted !== undefined) {
+          deleted++;
+          setProgress(deleted / total);
+          setStatus(`${deleted} / ${total} — ${info.deleted}`);
+        }
+        if (info.waiting !== undefined) {
+          setStatus(`Rate limited — resuming in ${info.waiting}s (${deleted} deleted)`);
+        }
+      }
+
+      function onSave(remaining) {
+        saveSession({ action: s.action, remainingIds: remaining, deleted, total });
+      }
+
+      try {
+        if (s.action === 'tweets') {
+          await deleteTweets(api, ids, onProgress, abortController.signal, onSave);
+        } else if (s.action === 'likes') {
+          await deleteLikes(api, ids, onProgress, abortController.signal, onSave);
+        } else if (s.action === 'conversations') {
+          await deleteConversations(api, ids, onProgress, abortController.signal, onSave);
+        }
+
+        if (abortController.signal.aborted) {
+          setStatus('Stopped. Reload the page to resume later.');
+        } else {
+          clearSession();
+          setStatus('Done.');
+        }
+      } catch (err) {
+        setStatus(`Error: ${err.message}`);
+      }
+
+      stopBtn.style.display = 'none';
+      goBtn.disabled = false;
+      updateReadiness();
+    });
+
+    // ── Action selection ──────────────────────────────────────────────
+
     actions.forEach((btn) => {
       btn.addEventListener('click', () => {
         actions.forEach((b) => b.classList.remove('active'));
@@ -720,12 +941,10 @@
         selectedAction = btn.dataset.action;
         parsedFile = null;
         fileInput.value = '';
+        dateFrom.value = '';
+        dateTo.value = '';
 
-        const needsFile = NEEDS_FILE.has(selectedAction);
-        fileLabel.style.display = needsFile ? '' : 'none';
-        skipInput.style.display = selectedAction === 'tweets' ? '' : 'none';
-        keepInput.style.display = selectedAction === 'tweets' ? '' : 'none';
-
+        updateVisibility();
         updateReadiness();
       });
     });
@@ -738,13 +957,26 @@
       reader.onloadend = (e) => {
         try {
           parsedFile = parseExportFile(e.target.result);
-          setStatus(`Loaded ${parsedFile.ids.length} ${parsedFile.action}`);
           progressWrap.style.display = '';
-          // Override action from file content if different
+
+          // Override action from file content
           selectedAction = parsedFile.action;
           actions.forEach((b) => {
             b.classList.toggle('active', b.dataset.action === selectedAction);
           });
+
+          // Show date range from file
+          const dated = parsedFile.entries.filter((e) => e.date);
+          if (dated.length > 0) {
+            const dates = dated.map((e) => e.date).sort((a, b) => a - b);
+            const oldest = formatDate(dates[0]);
+            const newest = formatDate(dates[dates.length - 1]);
+            setStatus(`Loaded ${parsedFile.entries.length} ${parsedFile.action} (${oldest} to ${newest})`);
+          } else {
+            setStatus(`Loaded ${parsedFile.entries.length} ${parsedFile.action}`);
+          }
+
+          updateVisibility();
           updateReadiness();
         } catch (err) {
           setStatus(err.message);
@@ -761,7 +993,8 @@
     // Close
     closeBtn.addEventListener('click', () => panel.remove());
 
-    // Start
+    // ── Start ─────────────────────────────────────────────────────────
+
     goBtn.addEventListener('click', async () => {
       goBtn.disabled = true;
       stopBtn.style.display = '';
@@ -769,6 +1002,7 @@
       abortController = new AbortController();
 
       let deleted = 0;
+      let total = 0;
 
       function onProgress(info) {
         if (info.deleted !== undefined) {
@@ -781,33 +1015,61 @@
         }
       }
 
-      let total = 0;
-
       try {
         if (selectedAction === 'tweets' && parsedFile) {
+          // Date filtering
+          const from = dateFrom.value ? new Date(dateFrom.value + 'T00:00:00') : null;
+          const to = dateTo.value ? new Date(dateTo.value + 'T23:59:59') : null;
+          let entries = filterEntriesByDate(parsedFile.entries, from, to);
+
+          // Skip/keep
           const skip = computeSkip(
-            parsedFile.ids.length,
+            entries.length,
             profileCount,
             skipInput.value ? parseInt(skipInput.value) : null
           );
           const keep = Math.min(100, Math.max(0, parseInt(keepInput.value) || 0));
-          const ids = parsedFile.ids.slice().reverse().slice(skip);
-          if (keep > 0) ids.splice(0, keep); // remove the newest N from the deletion list
-          total = parsedFile.ids.length;
-          deleted = skip + keep;
+
+          entries.reverse();
+          entries = entries.slice(skip);
+          if (keep > 0) entries.splice(0, keep);
+
+          const ids = entries.map((e) => e.id);
+          total = parsedFile.entries.length;
+          deleted = total - ids.length;
+
           const parts = [];
+          if (from || to) parts.push(`date range ${from ? formatDate(from) : '…'} → ${to ? formatDate(to) : '…'}`);
           if (skip) parts.push(`skipping ${skip} old`);
           if (keep) parts.push(`keeping ${keep} latest`);
           setStatus(`${parts.length ? parts.join(', ') + ' — ' : ''}deleting ${ids.length} tweets`);
-          await deleteTweets(api, ids, onProgress, abortController.signal);
+
+          function onSave(remaining) {
+            saveSession({ action: 'tweets', remainingIds: remaining, deleted, total });
+          }
+          await deleteTweets(api, ids, onProgress, abortController.signal, onSave);
 
         } else if (selectedAction === 'likes' && parsedFile) {
-          total = parsedFile.ids.length;
-          await deleteLikes(api, parsedFile.ids.slice().reverse(), onProgress, abortController.signal);
+          const from = dateFrom.value ? new Date(dateFrom.value + 'T00:00:00') : null;
+          const to = dateTo.value ? new Date(dateTo.value + 'T23:59:59') : null;
+          const entries = filterEntriesByDate(parsedFile.entries, from, to);
+          const ids = entries.map((e) => e.id).reverse();
+          total = parsedFile.entries.length;
+          deleted = total - ids.length;
+
+          function onSave(remaining) {
+            saveSession({ action: 'likes', remainingIds: remaining, deleted, total });
+          }
+          await deleteLikes(api, ids, onProgress, abortController.signal, onSave);
 
         } else if (selectedAction === 'conversations' && parsedFile) {
-          total = parsedFile.ids.length;
-          await deleteConversations(api, parsedFile.ids.slice().reverse(), onProgress, abortController.signal);
+          const ids = parsedFile.entries.map((e) => e.id).reverse();
+          total = ids.length;
+
+          function onSave(remaining) {
+            saveSession({ action: 'conversations', remainingIds: remaining, deleted, total });
+          }
+          await deleteConversations(api, ids, onProgress, abortController.signal, onSave);
 
         } else if (selectedAction === 'slow-delete') {
           total = profileCount;
@@ -837,7 +1099,12 @@
           setStatus(`Exported ${bookmarks.length} bookmarks`);
         }
 
-        setStatus(abortController.signal.aborted ? 'Stopped.' : 'Done.');
+        if (abortController.signal.aborted) {
+          setStatus('Stopped. Reload the page to resume later.');
+        } else {
+          clearSession();
+          setStatus('Done.');
+        }
 
       } catch (err) {
         setStatus(`Error: ${err.message}`);
