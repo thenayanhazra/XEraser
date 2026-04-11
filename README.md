@@ -34,7 +34,7 @@ XEraser runs inside your logged-in browser session. It uses the same internal AP
 
 Rate limits are handled automatically. When X throttles requests, XEraser reads the `x-rate-limit-reset` header and waits until the window reopens before resuming. You can also stop and restart at any time.
 
-For tweet deletion, XEraser auto-calculates how many already-deleted tweets to skip (based on the difference between your export file and your current profile count). You can override this with the skip input field.
+For tweet deletion, XEraser auto-calculates how many already-deleted tweets to skip (based on the difference between your export file and your current profile count). You can override this with the skip input field. The **Keep latest** field lets you protect your N most recent tweets from deletion (up to 100).
 
 ## License
 

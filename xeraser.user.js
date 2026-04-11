@@ -658,6 +658,7 @@
           <input type="file" id="xer-file" accept=".js" />
         </label>
         <input class="xer-skip-input" id="xer-skip" type="number" placeholder="Skip #" title="Tweets to skip (oldest first)" style="display:none;" />
+        <input class="xer-skip-input" id="xer-keep" type="number" min="0" max="100" placeholder="Keep latest" title="Keep your N most recent tweets (max 100)" style="display:none;" />
         <button class="xer-go" id="xer-go" disabled>Start</button>
         <button class="xer-stop" id="xer-stop" style="display:none;">Stop</button>
       </div>
@@ -692,6 +693,7 @@
     const fileLabel = panel.querySelector('#xer-file-label');
     const fileInput = panel.querySelector('#xer-file');
     const skipInput = panel.querySelector('#xer-skip');
+    const keepInput = panel.querySelector('#xer-keep');
     const goBtn = panel.querySelector('#xer-go');
     const stopBtn = panel.querySelector('#xer-stop');
     const progressWrap = panel.querySelector('#xer-progress');
@@ -722,6 +724,7 @@
         const needsFile = NEEDS_FILE.has(selectedAction);
         fileLabel.style.display = needsFile ? '' : 'none';
         skipInput.style.display = selectedAction === 'tweets' ? '' : 'none';
+        keepInput.style.display = selectedAction === 'tweets' ? '' : 'none';
 
         updateReadiness();
       });
@@ -787,10 +790,15 @@
             profileCount,
             skipInput.value ? parseInt(skipInput.value) : null
           );
+          const keep = Math.min(100, Math.max(0, parseInt(keepInput.value) || 0));
           const ids = parsedFile.ids.slice().reverse().slice(skip);
+          if (keep > 0) ids.splice(0, keep); // remove the newest N from the deletion list
           total = parsedFile.ids.length;
-          deleted = skip;
-          setStatus(`Skipping ${skip}, deleting ${ids.length} tweets`);
+          deleted = skip + keep;
+          const parts = [];
+          if (skip) parts.push(`skipping ${skip} old`);
+          if (keep) parts.push(`keeping ${keep} latest`);
+          setStatus(`${parts.length ? parts.join(', ') + ' — ' : ''}deleting ${ids.length} tweets`);
           await deleteTweets(api, ids, onProgress, abortController.signal);
 
         } else if (selectedAction === 'likes' && parsedFile) {
