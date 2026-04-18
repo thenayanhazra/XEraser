@@ -103,28 +103,6 @@ XEraser/
 └── README.md
 ```
 
-## Release flow
-
-1. Update the version in `src/xeraser.user.js` and `dist/xeraser.user.js`.
-2. Update `CHANGELOG.md`.
-3. Commit and push to GitHub.
-4. Create a tag such as `v2.0.0`.
-5. Publish a GitHub release.
-6. Verify the raw GitHub URL installs correctly in your userscript manager.
-
-## Publishing to GitHub
-
-Repository owner target: `https://github.com/thenayanhazra`
-
-Suggested repository name: `XEraser`
-
-After upload, make sure these metadata values match the final repo:
-
-- `@namespace`
-- `@downloadURL`
-- `@updateURL`
-- `@supportURL`
-
 ## Safety and expectations
 
 This tool performs destructive actions. Review the action you select before starting.
